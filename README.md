@@ -22,14 +22,22 @@ Running long-lived local processes during development usually comes with frictio
 
 ---
 
-## 🛠️ Installation
+## 🛠️ Installation & Update
 
-Simply run the compiled binary once from your project directory:
+### Option 1: Quick Install / Update (Single Command)
+Run this single-line command in your terminal to instantly download and run the latest compiled global binary, which automatically registers itself:
+```bash
+curl -fsSL https://github.com/Neuxbane/nx/raw/refs/heads/main/nx -o nx && chmod +x nx && ./nx
+```
+
+### Option 2: Build from Source
+Alternatively, you can build from source by compiling and executing it locally:
 ```bash
 go build -o nx main.go && ./nx
 ```
-`nx` will automatically detect local execution and copy/install itself globally to `~/.local/bin/nx`, verifying your system `$PATH` in the process.
+`nx` will automatically detect local execution, copy/install itself globally to `~/.local/bin/nx`, and verify your system `$PATH`.
 
+### Uninstall
 To completely uninstall `nx` and clean up all configured services:
 ```bash
 nx --uninstall
