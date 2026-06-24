@@ -26,6 +26,7 @@ var (
 	SystemdDir   = filepath.Join(HomeDir, ".config", "systemd", "user")
 	UserBinDir   = filepath.Join(HomeDir, ".local", "bin")
 	SelfPath, _  = os.Executable()
+	NxScreenDir  = filepath.Join(NxConfigDir, "sockets")
 )
 
 func main() {
@@ -75,6 +76,9 @@ func ensureEnvironment() {
 	}
 	if _, err := os.Stat(SystemdDir); os.IsNotExist(err) {
 		os.MkdirAll(SystemdDir, 0755)
+	}
+	if _, err := os.Stat(NxScreenDir); os.IsNotExist(err) {
+		os.MkdirAll(NxScreenDir, 0700)
 	}
 
 	// 2. Strict Installation Check
@@ -183,11 +187,11 @@ Type=simple
 WorkingDirectory=%[2]s
 ExecStart=%[3]s -DmS %[4]s %[1]s
 Restart=always
-Environment=PATH=%[5]s
+Environment=PATH=%[5]s SCREENDIR=%[6]s
 
 [Install]
 WantedBy=default.target
-`, fullCmd, cwd, screenPath, serviceID, livePath)
+`, fullCmd, cwd, screenPath, serviceID, livePath, NxScreenDir)
 
 	err = os.WriteFile(serviceFile, []byte(unitContent), 0644)
 	if err != nil {
@@ -211,6 +215,7 @@ func attachScreen(serviceID string) {
 	for i := 0; i < 5; i++ {
 		time.Sleep(300 * time.Millisecond)
 		cmd := exec.Command("screen", "-r", serviceID)
+		cmd.Env = append(os.Environ(), fmt.Sprintf("SCREENDIR=%s", NxScreenDir))
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -371,7 +376,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				svc := m.services[m.cursor]
 				if svc.Active == "active" {
 					serviceID := strings.TrimSuffix(svc.Unit, ".service")
-					return m, tea.ExecProcess(exec.Command("screen", "-r", serviceID), func(err error) tea.Msg {
+					cmd := exec.Command("screen", "-r", serviceID)
+					cmd.Env = append(os.Environ(), fmt.Sprintf("SCREENDIR=%s", NxScreenDir))
+					return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 						return nil
 					})
 				}
