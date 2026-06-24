@@ -29,6 +29,8 @@ var (
 )
 
 func main() {
+	ensureUserRuntime()
+
 	if len(os.Args) > 1 && os.Args[1] == "--uninstall" {
 		handleUninstall()
 		return
@@ -40,6 +42,26 @@ func main() {
 		handleCLIMode(os.Args[1:])
 	} else {
 		handleTUIMode()
+	}
+}
+
+func ensureUserRuntime() {
+	if os.Getenv("XDG_RUNTIME_DIR") != "" {
+		return
+	}
+
+	uid := os.Getuid()
+	runtimeDir := fmt.Sprintf("/run/user/%d", uid)
+
+	if _, err := os.Stat(runtimeDir); os.IsNotExist(err) {
+		if uid == 0 {
+			// As root, we can start the user manager service for root
+			exec.Command("systemctl", "start", "user@0.service").Run()
+		}
+	}
+
+	if _, err := os.Stat(runtimeDir); err == nil {
+		os.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	}
 }
 
@@ -182,21 +204,24 @@ WantedBy=default.target
 }
 
 func attachScreen(serviceID string) {
-	// Wait a moment for screen session to initialize
-	time.Sleep(300 * time.Millisecond)
-
 	fmt.Printf("\n🔌 Attaching to screen session for %s...\n", serviceID)
 	fmt.Println("👉 Press Ctrl+A followed by D to safely detach (Service will stay running in background)")
 
-	cmd := exec.Command("screen", "-r", serviceID)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("⚠️  Could not attach to screen session: %v\n", err)
-		streamLogs(serviceID)
+	var cmdErr error
+	for i := 0; i < 5; i++ {
+		time.Sleep(300 * time.Millisecond)
+		cmd := exec.Command("screen", "-r", serviceID)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmdErr = cmd.Run()
+		if cmdErr == nil {
+			return
+		}
 	}
+
+	fmt.Printf("⚠️  Could not attach to screen session: %v\n", cmdErr)
+	streamLogs(serviceID)
 }
 
 func streamLogs(serviceID string) {
