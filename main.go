@@ -1,10 +1,8 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -29,7 +27,6 @@ var (
 	UserBinDir   = filepath.Join(HomeDir, ".local", "bin")
 	SelfPath, _  = os.Executable()
 	NxScreenDir  = filepath.Join(NxConfigDir, "sockets")
-	ProjectsFile = filepath.Join(NxConfigDir, "projects.json")
 )
 
 func main() {
@@ -171,52 +168,7 @@ func handleCLIMode(args []string) {
 		safeName = "app"
 	}
 
-	store := loadProjects()
-	serviceID, exists := store.Projects[cwd]
-	if !exists {
-		// Check if any other project has the same safeName
-		var duplicates []string
-		for path, id := range store.Projects {
-			if strings.Contains(id, safeName) {
-				duplicates = append(duplicates, path)
-			}
-		}
-
-		if len(duplicates) > 0 {
-			fmt.Printf("⚠️  Found %d other projects with the same folder name (%s)...\n", len(duplicates), safeName)
-			fmt.Println("Choose one to run, or create a new unique one:")
-			fmt.Println(" [n] Create New (Recommended)")
-			for i, path := range duplicates {
-				fmt.Printf(" [%d] %s\n", i+1, path)
-			}
-
-			var input string
-			fmt.Print("👉 Selection: ")
-			fmt.Scanln(&input)
-
-			if input == "n" || input == "N" {
-				uniqueName := generateUniqueID(safeName)
-				serviceID = "nx-" + uniqueName
-			} else {
-				var idx int
-				fmt.Sscanf(input, "%d", &idx)
-				if idx > 0 && idx <= len(duplicates) {
-					serviceID = store.Projects[duplicates[idx-1]]
-				} else {
-					fmt.Println("❌ Invalid selection. Creating new...")
-					uniqueName := generateUniqueID(safeName)
-					serviceID = "nx-" + uniqueName
-				}
-			}
-		} else {
-			serviceID = fmt.Sprintf("nx-%s", safeName)
-		}
-
-		// Save the mapping
-		store.Projects[cwd] = serviceID
-		saveProjects(store)
-	}
-
+	serviceID := fmt.Sprintf("nx-%s", safeName)
 	serviceFile := filepath.Join(SystemdDir, serviceID+".service")
 	fullCmd := strings.Join(args, " ")
 	livePath := os.Getenv("PATH")
@@ -547,31 +499,9 @@ func (m tuiModel) View() string {
 	return s.String()
 }
 
-// Project mapping for path -> serviceID
-type ProjectStore struct {
-	Projects map[string]string `json:"projects"`
-}
-
-func loadProjects() ProjectStore {
-	store := ProjectStore{Projects: make(map[string]string)}
-	data, err := os.ReadFile(ProjectsFile)
-	if err != nil {
-		return store
-	}
-	json.Unmarshal(data, &store)
-	return store
-}
-
-func saveProjects(store ProjectStore) {
-	data, _ := json.MarshalIndent(store, "", "  ")
-	os.WriteFile(ProjectsFile, data, 0644)
-}
-
-func generateUniqueID(folderName string) string {
-	rand.Seed(time.Now().UnixNano())
-	return fmt.Sprintf("%s-%d", folderName, rand.Intn(10000))
-}
-
+// -----------------------------------------------------------------------------
+// Helper System Utilities
+// -----------------------------------------------------------------------------
 func getNxServices() []ServiceInfo {
 	out, err := exec.Command("systemctl", "--user", "list-units", "nx-*", "--all", "--no-legend").Output()
 	if err != nil {
