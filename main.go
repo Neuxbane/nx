@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,7 +30,40 @@ var (
 	UserBinDir   = filepath.Join(HomeDir, ".local", "bin")
 	SelfPath, _  = os.Executable()
 	NxScreenDir  = filepath.Join(NxConfigDir, "sockets")
+	MappingFile  = filepath.Join(NxConfigDir, "services.json")
 )
+
+type ServiceDetails struct {
+	ServiceID string `json:"service_id"`
+	Alias     string `json:"alias"`
+	CWD       string `json:"cwd"`
+	Command   string `json:"command"`
+}
+
+type ServiceMapping struct {
+	Mappings map[string]ServiceDetails `json:"mappings"`
+}
+
+func loadMappings() ServiceMapping {
+	m := ServiceMapping{Mappings: make(map[string]ServiceDetails)}
+	data, err := os.ReadFile(MappingFile)
+	if err != nil {
+		return m
+	}
+	json.Unmarshal(data, &m)
+	return m
+}
+
+func saveMappings(m ServiceMapping) {
+	data, _ := json.MarshalIndent(m, "", "  ")
+	os.WriteFile(MappingFile, data, 0644)
+}
+
+func generateRandomID(prefix string) string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b))
+}
 
 func main() {
 	ensureUserRuntime()
@@ -168,9 +204,48 @@ func handleCLIMode(args []string) {
 		safeName = "app"
 	}
 
-	serviceID := fmt.Sprintf("nx-%s", safeName)
-	serviceFile := filepath.Join(SystemdDir, serviceID+".service")
+	// Use a random service ID to avoid collisions between folders with the same name
+	serviceID := generateRandomID("nx")
+	
+	// Use the folder name as the default alias, but let the user override it
+	fmt.Printf("🚀 Project detected: %s\n", safeName)
+	
+	var userAlias string
+	for {
+		fmt.Printf("👉 Enter alias for this session (default: %s): ", safeName)
+		fmt.Scanln(&userAlias)
+		
+		if userAlias == "" {
+			userAlias = safeName
+		}
+
+		// Clean the user alias to be systemd-safe
+		regAlias := regexp.MustCompile("[^a-z0-9-_]")
+		userAlias = regAlias.ReplaceAllString(strings.ToLower(userAlias), "")
+		if userAlias == "" {
+			userAlias = "app"
+		}
+
+		mappings := loadMappings()
+		if _, exists := mappings.Mappings[userAlias]; exists {
+			fmt.Printf("⚠️  Alias '%s' already exists. Please choose a different name.\n", userAlias)
+			continue
+		}
+		break
+	}
+
+	// We map the random serviceID to the user-defined alias
+	mappings := loadMappings()
 	fullCmd := strings.Join(args, " ")
+	mappings.Mappings[userAlias] = ServiceDetails{
+		ServiceID: serviceID,
+		Alias:     userAlias,
+		CWD:       cwd,
+		Command:   fullCmd,
+	}
+	saveMappings(mappings)
+
+	serviceFile := filepath.Join(SystemdDir, serviceID+".service")
 	livePath := os.Getenv("PATH")
 
 	screenPath, err := exec.LookPath("screen")
@@ -179,19 +254,19 @@ func handleCLIMode(args []string) {
 	}
 
 	unitContent := fmt.Sprintf(`[Unit]
-Description=NX Managed Service - %[1]s
+Description=NX Managed Service - %[1]s (Alias: %[2]s)
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%[2]s
-ExecStart=%[3]s -DmS %[4]s %[1]s
+WorkingDirectory=%[3]s
+ExecStart=%[4]s -DmS %[5]s %[1]s
 Restart=always
-Environment=PATH=%[5]s SCREENDIR=%[6]s
+Environment=PATH=%[6]s SCREENDIR=%[7]s
 
 [Install]
 WantedBy=default.target
-`, fullCmd, cwd, screenPath, serviceID, livePath, NxScreenDir)
+`, fullCmd, userAlias, cwd, screenPath, serviceID, livePath, NxScreenDir)
 
 	err = os.WriteFile(serviceFile, []byte(unitContent), 0644)
 	if err != nil {
@@ -199,7 +274,8 @@ WantedBy=default.target
 		return
 	}
 
-	fmt.Printf("🚀 Registering and launching daemon service: %s\n", serviceID)
+	fmt.Printf("✅ Registered as %s (ID: %s)\n", userAlias, serviceID)
+	fmt.Printf("🚀 Launching daemon service %s...\n", serviceID)
 	exec.Command("systemctl", "--user", "daemon-reload").Run()
 	exec.Command("systemctl", "--user", "enable", serviceID).Run()
 	exec.Command("systemctl", "--user", "start", serviceID).Run()
@@ -256,6 +332,8 @@ type ServiceInfo struct {
 	Active string 
 	Sub    string 
 	Loaded string 
+	Alias  string
+	Command string
 }
 
 type tuiModel struct {
@@ -419,11 +497,14 @@ func (m tuiModel) View() string {
 	if len(m.services) == 0 {
 		s.WriteString(" No nx processes active. Launch one inside a project directory using:\n 'nx <command>'\n")
 	} else {
-		s.WriteString(fmt.Sprintf("  %-25s %-12s %-12s %-10s\n", "SERVICE NAME", "ACTIVE", "SUB STATE", "AUTOSTART"))
-		s.WriteString("  " + strings.Repeat("-", 64) + "\n")
+		s.WriteString(fmt.Sprintf("  %-20s %-12s %-12s %-10s %-20s\n", "SERVICE NAME", "ACTIVE", "SUB STATE", "AUTOSTART", "COMMAND"))
+		s.WriteString("  " + strings.Repeat("-", 88) + "\n")
 
 		for i, svc := range m.services {
-			displayName := strings.TrimSuffix(svc.Unit, ".service")
+			displayName := svc.Alias
+			if displayName == "" {
+				displayName = strings.TrimSuffix(svc.Unit, ".service")
+			}
 			
 			activeStr := svc.Active
 			if svc.Active == "active" {
@@ -432,7 +513,13 @@ func (m tuiModel) View() string {
 				activeStr = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("failed")
 			}
 
-			rowStr := fmt.Sprintf("  %-25s %-12s %-12s %-10s", displayName, activeStr, svc.Sub, svc.Loaded)
+			// Find the command for this service
+			command := svc.Command
+			if command == "" {
+				command = "unknown"
+			}
+
+			rowStr := fmt.Sprintf("  %-20s %-12s %-12s %-10s %-20s", displayName, activeStr, svc.Sub, svc.Loaded, command)
 
 			if m.cursor == i && !m.confirmMode {
 				selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("238"))
@@ -446,7 +533,7 @@ func (m tuiModel) View() string {
 		}
 	}
 
-	s.WriteString("\n" + strings.Repeat("─", 68) + "\n")
+	s.WriteString("\n" + strings.Repeat("─", 88) + "\n")
 	
 	if m.statusMsg != "" {
 		statusStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Italic(true)
@@ -510,13 +597,15 @@ func getNxServices() []ServiceInfo {
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	var services []ServiceInfo
+	mappings := loadMappings()
+
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
 		}
 		
-		if fields[0] == "●" {
+		if len(fields) > 0 && (fields[0] == "●" || fields[0] == "○") {
 			fields = fields[1:]
 		}
 
@@ -529,11 +618,31 @@ func getNxServices() []ServiceInfo {
 				loadedStatus = "enabled"
 			}
 
+			// Try to find a mapping for this unit
+			displayName := strings.TrimSuffix(unitName, ".service")
+			var alias string
+			var command string
+			for _, detail := range mappings.Mappings {
+				if detail.ServiceID == displayName {
+					alias = detail.Alias
+					command = detail.Command
+					break
+				}
+			}
+			if alias == "" {
+				alias = displayName
+			}
+			if command == "" {
+				command = "unknown"
+			}
+
 			services = append(services, ServiceInfo{
 				Unit:   unitName,
 				Active: fields[2],
 				Sub:    fields[3],
 				Loaded: loadedStatus,
+				Alias:  alias,
+				Command: command,
 			})
 		}
 	}
