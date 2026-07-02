@@ -491,6 +491,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m tuiModel) View() string {
 	var s strings.Builder
 
+	// Clear screen and move cursor to top-left to ensure a fresh refresh
+	s.WriteString("\033[H\033[2J")
+
 	headerStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("14")).Background(lipgloss.Color("8")).Padding(0, 1)
 	s.WriteString(headerStyle.Render("NX SYSTEMD USER PROCESS MANAGER") + "\n\n")
 
@@ -506,11 +509,16 @@ func (m tuiModel) View() string {
 				displayName = strings.TrimSuffix(svc.Unit, ".service")
 			}
 			
-			activeStr := svc.Active
-			if svc.Active == "active" {
-				activeStr = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(svc.Active)
-			} else if svc.Active == "failed" || svc.Sub == "failed" {
-				activeStr = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("failed")
+			activePlain := svc.Active
+			if svc.Active == "failed" || svc.Sub == "failed" {
+				activePlain = "failed"
+			}
+
+			activeStr := fmt.Sprintf("%-12s", activePlain)
+			if activePlain == "active" {
+				activeStr = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(activeStr)
+			} else if activePlain == "failed" {
+				activeStr = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(activeStr)
 			}
 
 			// Find the command for this service
